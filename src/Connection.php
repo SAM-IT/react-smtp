@@ -13,37 +13,68 @@ class Connection extends \React\Socket\Connection{
     const STATUS_INIT = 1;
     const STATUS_FROM = 2;
     const STATUS_TO = 3;
-    const STATUS_DATA = 4;
+    const STATUS_HEADERS = 4;
+    const STATUS_UNFOLDING = 5;
+    const STATUS_BODY = 6;
+
+
     /**
      * This status is used when all mail data has been received and the system is deciding whether to accept or reject.
      */
-    const STATUS_PROCESSING = 5;
+    const STATUS_PROCESSING = 7;
+
+
+    const REGEXES = [
+        'Quit' => '/^QUIT$/',
+        'Helo' => '/^HELO (.*)$/',
+        'Ehlo' => '/^EHLO (.*)$/',
+        'MailFrom' => '/^MAIL FROM:\s*(.*)$/',
+        'Reset' => '/^RSET$/',
+        'RcptTo' => '/^RCPT TO:\s*(.*)$/',
+        'StartData' => '/^DATA$/',
+        'StartHeader' => '/^(\w+):\s*(.*)$/',
+        'StartBody' => '/^$/',
+        'Unfold' => '/^ (.*)$/',
+        'EndData' => '/^\.$/',
+        'BodyLine' => '/^(.*)$/',
+        'EndBody' => '/^\.$/'
+    ];
 
     protected $states = [
         self::STATUS_NEW => [
-            'Helo' => 'HELO',
-            'Ehlo' => 'EHLO',
-            'Quit' => 'QUIT'
-
+            'Quit', 'Helo', 'Ehlo'
         ],
         self::STATUS_INIT => [
-            'MailFrom' => 'MAIL FROM',
-            'Quit' => 'QUIT',
-            'Reset' => 'RSET'
+            'MailFrom',
+            'Quit'
+
         ],
         self::STATUS_FROM => [
-            'RcptTo' => 'RCPT TO',
-            'Quit' => 'QUIT',
-            'Reset' => 'RSET'
+            'RcptTo',
+            'Quit',
+            'Reset',
         ],
         self::STATUS_TO => [
-            'RcptTo' => 'RCPT TO',
-            'Quit' => 'QUIT',
-            'Data' => 'DATA',
-            'Reset' => 'RSET'
+            'Quit',
+            'StartData',
+            'Reset',
+            'RcptTo',
+
         ],
-        self::STATUS_DATA => [
-            'Line' => '' // This will match any line.
+        self::STATUS_HEADERS => [
+            'EndBody',
+            'StartHeader',
+            'StartBody',
+        ],
+        self::STATUS_UNFOLDING => [
+            'StartBody',
+            'EndBody',
+            'Unfold',
+            'StartHeader',
+        ],
+        self::STATUS_BODY => [
+            'EndBody',
+            'BodyLine'
         ],
         self::STATUS_PROCESSING => [
 
@@ -75,6 +106,16 @@ class Connection extends \React\Socket\Connection{
      * @var string
      */
     protected $lineBuffer = '';
+
+    /**
+     * @var string Name of the header in the foldBuffer.
+     */
+    protected $foldHeader = '';
+    /**
+     * Buffer used for unfolding multiline headers..
+     * @var string
+     */
+    protected $foldBuffer = '';
     protected $from;
     protected $recipients = [];
     /**
@@ -119,7 +160,7 @@ class Connection extends \React\Socket\Connection{
         // See issues #192, #209, and #240
         $data = stream_socket_recvfrom($stream, $this->bufferSize);;
 
-        $limit = $this->state == self::STATUS_DATA ? 1000 : 512;
+        $limit = $this->state == self::STATUS_BODY ? 1000 : 512;
         if ('' !== $data && false !== $data) {
             $this->lineBuffer .= $data;
             if (strlen($this->lineBuffer) > $limit) {
@@ -144,32 +185,35 @@ class Connection extends \React\Socket\Connection{
      * Parses the command from the beginning of the line.
      *
      * @param string $line
-     * @return string
+     * @return string[] An array containing the command and all arguments.
      */
-    protected function parseCommand(&$line)
+    protected function parseCommand($line)
     {
-        foreach ($this->states[$this->state] as $key => $candidate) {
-            if (strncasecmp($candidate, $line, strlen($candidate)) == 0) {
-                $line = substr($line, strlen($candidate));
-                return $key;
+
+        foreach ($this->states[$this->state] as $key) {
+            if (preg_match(self::REGEXES[$key], $line, $matches) === 1) {
+                $matches[0] = $key;
+                $this->emit('debug', "$line match for $key (" . self::REGEXES[$key] . ")");
+                return $matches;
+            } else {
+                $this->emit('debug', "$line does not match for $key (" . self::REGEXES[$key] . ")");
             }
         }
+        return [null];
     }
 
     protected function handleCommand($line)
     {
-        if ($line !=='') {
-            $command = $this->parseCommand($line);
-            if ($command == null) {
-                $this->sendReply(500, "Unexpected or unknown command.");
-                $this->sendReply(500, $this->states[$this->state]);
-
-            } else {
-                $func = "handle{$command}Command";
-                $this->$func($line);
-            }
+        $arguments = $this->parseCommand($line);
+        $command = array_shift($arguments);
+        if ($command == null) {
+            $this->sendReply(500, array_merge(
+                $this->states[$this->state],
+                ["Unexpected or unknown command."]
+            ));
+        } else {
+            call_user_func_array([$this, "handle{$command}Command"], $arguments);
         }
-
     }
 
     protected function sendReply($code, $message, $close = false)
@@ -212,7 +256,7 @@ class Connection extends \React\Socket\Connection{
     {
 
         // Parse the email.
-        if (preg_match('/:\s*\<(?<email>.*)\>( .*)?/', $arguments, $matches) == 1) {
+        if (preg_match('/\<(?<email>.*)\>( .*)?/', $arguments, $matches) == 1) {
             $this->state = self::STATUS_FROM;
             $this->from  = $matches['email'];
             $this->sendReply(250, "MAIL OK");
@@ -230,7 +274,7 @@ class Connection extends \React\Socket\Connection{
 
     protected function handleRcptToCommand($arguments) {
         // Parse the recipient.
-        if (preg_match('/:\s*(?<name>.*?)?\<(?<email>.*)\>( .*)?/', $arguments, $matches) == 1) {
+        if (preg_match('/^(?<name>.*?)\s*?\<(?<email>.*)\>\s*$/', $arguments, $matches) == 1) {
             // Always set to 3, since this command might occur multiple times.
             $this->state = self::STATUS_TO;
             $this->recipients[$matches['email']] = $matches['name'];
@@ -240,45 +284,70 @@ class Connection extends \React\Socket\Connection{
         }
     }
 
-    protected function handleDataCommand($arguments)
+    protected function handleStartDataCommand()
     {
-        $this->state = self::STATUS_DATA;
+        $this->state = self::STATUS_HEADERS;
         $this->sendReply(354, "Enter message, end with CRLF . CRLF");
     }
 
-    protected function handleLineCommand($line)
+    protected function handleUnfoldCommand($content)
     {
-        if ($line === '.') {
-            $this->state = self::STATUS_PROCESSING;
-            /**
-             * Default action, using timer so that callbacks above can be called asynchronously.
-             */
-            $this->defaultActionTimer = $this->loop->addTimer($this->defaultActionTimeout, function() {
-                if ($this->acceptByDefault) {
-                    $this->accept();
-                } else {
-                    $this->reject();
-                }
-            });
+        $this->foldBuffer .= $content;
+    }
 
-
-
-            $this->emit('message', [
-                'from' => $this->from,
-                'recipients' => $this->recipients,
-                'message' => $this->message,
-                'connection' => $this,
-            ]);
-        } else {
-            // Check if this is a header line.
-            // For now support limited header names only..
-            if (preg_match('/(?<name>\w+):(?<value>.*)/', $line, $matches) == 1 && $this->message->getBody()->getSize() == 0) {
-                $this->message = $this->message->withAddedHeader($matches['name'], $matches['value']);
-            } else {
-                $this->message->getBody()->write($line);
-            }
+    protected function handleStartHeaderCommand($name, $content)
+    {
+        // Check if status is unfolding.
+        if ($this->state === self::STATUS_UNFOLDING) {
+            $this->message = $this->message->withAddedHeader($this->foldHeader, $this->foldBuffer);
         }
 
+        $this->foldBuffer = $content;
+        $this->foldHeader = $name;
+        $this->state = self::STATUS_UNFOLDING;
+    }
+
+    protected function handleStartBodyCommand()
+    {
+        // Check if status is unfolding.
+        if ($this->state === self::STATUS_UNFOLDING) {
+            $this->message = $this->message->withAddedHeader($this->foldHeader, $this->foldBuffer);
+        }
+        $this->state = self::STATUS_BODY;
+
+    }
+
+    protected function handleEndBodyCommand()
+    {
+        // Check if status is unfolding.
+        if ($this->state === self::STATUS_UNFOLDING) {
+            $this->message = $this->message->withAddedHeader($this->foldHeader, $this->foldBuffer);
+        }
+
+        $this->state = self::STATUS_PROCESSING;
+        /**
+         * Default action, using timer so that callbacks above can be called asynchronously.
+         */
+        $this->defaultActionTimer = $this->loop->addTimer($this->defaultActionTimeout, function() {
+            if ($this->acceptByDefault) {
+                $this->accept();
+            } else {
+                $this->reject();
+            }
+        });
+
+
+
+        $this->emit('message', [
+            'from' => $this->from,
+            'recipients' => $this->recipients,
+            'message' => $this->message,
+            'connection' => $this,
+        ]);
+    }
+    protected function handleBodyLineCommand($line)
+    {
+        $this->message->getBody()->write($line);
     }
 
     /**
@@ -324,11 +393,5 @@ class Connection extends \React\Socket\Connection{
             $this->defaultActionTimer = $this->loop->addTimer($seconds, $this->defaultActionTimer->getCallback());
         }
     }
-
-    public function getRemoteAddress()
-    {
-        return parent::getRemoteAddress(); // TODO: Change the autogenerated stub
-    }
-
 
 }
