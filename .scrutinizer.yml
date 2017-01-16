@@ -12,21 +12,14 @@ build:
     tests:
         override:
             -
-                command: 'tools/phpunit --coverage-clover=coverage-file'
+                command: 'phpunit --coverage-clover=coverage-file'
                 coverage:
                     file: 'coverage-file'
                     format: 'php-clover'
 
-    dependencies:
-        before:
-            - 'wget https://phar.io/releases/phive.phar'
-            - 'wget https://phar.io/releases/phive.phar.asc'
-            - 'gpg --keyserver hkps.pool.sks-keyservers.net --recv-keys 0x9B2D5D79'
-            - 'gpg --verify phive.phar.asc phive.phar'
-            - 'php phive.phar install --trust-gpgp-keys "0x4AA394086372C20A"'
     environment:
         php:
-            version: 5.6.9
+            version: 7.0
 tools:
     php_sim: false
     php_cpd: false
