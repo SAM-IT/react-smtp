@@ -193,10 +193,10 @@ class Connection extends \React\Socket\Connection{
         foreach ($this->states[$this->state] as $key) {
             if (preg_match(self::REGEXES[$key], $line, $matches) === 1) {
                 $matches[0] = $key;
-                $this->emit('debug', "$line match for $key (" . self::REGEXES[$key] . ")");
+                $this->emit('debug', ["$line match for $key (" . self::REGEXES[$key] . ")"]);
                 return $matches;
             } else {
-                $this->emit('debug', "$line does not match for $key (" . self::REGEXES[$key] . ")");
+                $this->emit('debug', ["$line does not match for $key (" . self::REGEXES[$key] . ")"]);
             }
         }
         return [null];
@@ -206,7 +206,7 @@ class Connection extends \React\Socket\Connection{
     {
         $arguments = $this->parseCommand($line);
         $command = array_shift($arguments);
-        if ($command == null) {
+        if ($command === null) {
             $this->sendReply(500, array_merge(
                 $this->states[$this->state],
                 ["Unexpected or unknown command."]
@@ -235,7 +235,7 @@ class Connection extends \React\Socket\Connection{
 
     }
 
-    protected function handleResetCommand($domain)
+    protected function handleResetCommand()
     {
         $this->reset();
         $this->sendReply(250, "Reset OK");
@@ -243,13 +243,13 @@ class Connection extends \React\Socket\Connection{
     protected function handleHeloCommand($domain)
     {
         $this->state = self::STATUS_INIT;
-        $this->sendReply(250, "Hello {$this->getRemoteAddress()}");
+        $this->sendReply(250, "Hello {$domain} @ {$this->getRemoteAddress()}");
     }
 
     protected function handleEhloCommand($domain)
     {
         $this->state = self::STATUS_INIT;
-        $this->sendReply(250, "Hello {$this->getRemoteAddress()}");
+        $this->sendReply(250, "Hello {$domain} @ {$this->getRemoteAddress()}");
     }
 
     protected function handleMailFromCommand($arguments)
@@ -266,7 +266,7 @@ class Connection extends \React\Socket\Connection{
 
     }
 
-    protected function handleQuitCommand($arguments)
+    protected function handleQuitCommand()
     {
         $this->sendReply(221, "Goodbye.", true);
 
