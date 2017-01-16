@@ -19,7 +19,7 @@ build:
 
     environment:
         php:
-            version: 7.0
+            version: 7.1.0
 tools:
     php_sim: false
     php_cpd: false
