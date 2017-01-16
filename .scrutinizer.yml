@@ -12,11 +12,14 @@ build:
     tests:
         override:
             -
-                command: 'phpunit --coverage-clover=coverage-file'
+                command: 'php phpunit.phar --coverage-clover=coverage-file'
                 coverage:
                     file: 'coverage-file'
                     format: 'php-clover'
 
+    dependencies:
+        before:
+            - 'wget https://phar.phpunit.de/phpunit.phar'
     environment:
         php:
             version: 7.1.0
