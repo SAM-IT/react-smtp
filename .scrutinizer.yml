@@ -20,7 +20,11 @@ build:
     dependencies:
         before:
             - 'wget https://phar.io/releases/phive.phar'
-            - 'php phive.phar install --trust-gpg-keys 4AA394086372C20A'
+            - 'wget https://phar.io/releases/phive.phar.asc'
+            - 'gpg --keyserver hkps.pool.sks-keyservers.net --recv-keys 0x9B2D5D79'
+            - 'gpg --verify phive.phar.asc phive.phar'
+            - 'gpg --keyserver pgp.uni-mainz.de --recv-keys 0x4AA394086372C20A'
+            - 'php phive.phar install'
     environment:
         php:
             version: 5.6.9
